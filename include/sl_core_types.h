@@ -236,7 +236,16 @@ constexpr Feature kFeatureNvPerf = 1002;
 
 constexpr Feature kFeatureDirectSR = 1003;
 
-// ImGUI 
+//! AMD FidelityFX Super Resolution (FSR3) upscaling — Community Shaders sl.fsr plugin
+constexpr Feature kFeatureFSR = 1004;
+
+//! AMD FidelityFX FSR3 frame generation — Community Shaders sl.fsr plugin (present-hook interpolation)
+constexpr Feature kFeatureFSR_G = 1005;
+
+//! Intel XeSS super resolution upscaling — Community Shaders sl.xess plugin
+constexpr Feature kFeatureXeSS = 1006;
+
+// ImGUI
 constexpr Feature kFeatureImGUI = 9999;
 
 //! Common feature, NOT intended to be used directly
