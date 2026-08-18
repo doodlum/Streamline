@@ -1,0 +1,9 @@
+{
+    "id": 1004,
+    "priority": 100,
+    "name": "sl.fsr",
+    "namespace": "fsr",
+    "required_plugins": ["sl.common"],
+    "rhi": ["vk"],
+    "hooks": []
+}
