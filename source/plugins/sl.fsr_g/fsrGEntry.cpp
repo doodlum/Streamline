@@ -589,7 +589,12 @@ bool destroyFgSwapchain(fsr::FSRContext& ctx)
     ctx.pendingFrame = {};
     ffxConfigureDescFrameGeneration cfg{};
     cfg.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
-    cfg.swapChain = nullptr;
+    // Must name the swapchain being detached, exactly as the enable path does (see the
+    // other ffxConfigureDescFrameGeneration sites). Passing nullptr makes ffxConfigure
+    // fail with FFX_API_RETURN_ERROR_RUNTIME_ERROR (3), which surfaces as
+    // "failed to unlink FG swapchain 0x00000003" and leaves the wrapper linked; the host
+    // then defers swapchain recreation forever and no frame-gen method switch completes.
+    cfg.swapChain = reinterpret_cast<void*>(ctx.fgWrappedSwapchain);
     cfg.frameGenerationEnabled = false;
     cfg.frameID = frameID;
     if (ctx.fgContext) {
