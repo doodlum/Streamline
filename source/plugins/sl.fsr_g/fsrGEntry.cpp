@@ -774,8 +774,10 @@ bool createFgSwapchain(fsr::FSRContext& ctx, VkDevice device, const VkSwapchainC
         metadata.maxFrameAverageLightLevel = 200.0f;
 
         ctx.fgSwapchainFns.pOutSetHdrMetadataEXT(device, 1, &ctx.fgWrappedSwapchain, &metadata);
-        SL_LOG_INFO("sl.fsr_g: published default HDR mastering range (max 1000 nits) for colour space %d",
-            (int)pCreateInfo->imageColorSpace);
+        SL_LOG_INFO("sl.fsr_g: published default HDR mastering range (max 1000 nits) for colour space %d", (int)pCreateInfo->imageColorSpace);
+    } else {
+        SL_LOG_WARN("sl.fsr_g: HDR mastering range NOT published (setHdrMetadataFn=%p colourSpace=%d) - frame generation will divide by a zero luminance on an HDR swapchain",
+            (void*)ctx.fgSwapchainFns.pOutSetHdrMetadataEXT, (int)pCreateInfo->imageColorSpace);
     }
 
     // Link the interpolation context to this swapchain + register our dispatch callback. Start
