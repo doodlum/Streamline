@@ -75,6 +75,9 @@ struct FSRContext
     FrameGenerationFrame pendingFrame{};
     std::atomic<bool> generatedDispatchSucceeded{ false };
     std::atomic<uint32_t> lastPresentedFrameCount{ 1 };
+    // Running total of presented frames (real + generated); the host differences it for the true
+    // post-FG rate. See FSRFrameGenState::totalPresentedFrames.
+    std::atomic<uint64_t> totalPresentedFrames{ 0 };
 
     // --- Frame generation (FFX FrameInterpolationSwapChainVK proxy) -----------------------------
     // The present hook recreates the swapchain when FSR FG takes or releases ownership. While wrapped,
@@ -1047,6 +1050,7 @@ sl::Result slFSRGetFrameGenState(const sl::ViewportHandle& /*viewport*/, sl::FSR
     auto& ctx = (*fsr::getContext());
     state.status = 0;
     state.numFramesActuallyPresented = ctx.lastPresentedFrameCount.load(std::memory_order_acquire);
+    state.totalPresentedFrames = ctx.totalPresentedFrames.load(std::memory_order_acquire);
     state.estimatedVRAMUsageInBytes = 0;
     return Result::eOk;
 }
@@ -1313,13 +1317,20 @@ VkResult slHookVkQueuePresentKHR(VkQueue Queue, const VkPresentInfoKHR* PresentI
     }
 
     ctx.generatedDispatchSucceeded.store(false, std::memory_order_release);
-    ctx.lastPresentedFrameCount.store(1, std::memory_order_release);
+
+    // Do NOT publish an intermediate count here. lastPresentedFrameCount is read asynchronously by
+    // the host (CS samples it per render frame to report post-FG frame rate), and the present below
+    // takes a full frame interval. Resetting to 1 first meant any read landing inside that window
+    // saw 1, so the reported multiplier oscillated between 1 and 2 and post-FG FPS intermittently
+    // showed the un-doubled value. Compute the result locally and publish it once, so the value
+    // stays at the previous present's result until this one is known.
     VkResult r = ctx.fgSwapchainFns.pOutQueuePresentKHR ?
         ctx.fgSwapchainFns.pOutQueuePresentKHR(Queue, PresentInfo) : VK_ERROR_INITIALIZATION_FAILED;
 
-    if (generatedFrameConfigured && r >= 0 &&
-        ctx.generatedDispatchSucceeded.load(std::memory_order_acquire))
-        ctx.lastPresentedFrameCount.store(2, std::memory_order_release);
+    const uint32_t presentedThisFrame = (generatedFrameConfigured && r >= 0 &&
+        ctx.generatedDispatchSucceeded.load(std::memory_order_acquire)) ? 2u : 1u;
+    ctx.lastPresentedFrameCount.store(presentedThisFrame, std::memory_order_release);
+    ctx.totalPresentedFrames.fetch_add(presentedThisFrame, std::memory_order_release);
     Skip = true;
     return r;
 }
