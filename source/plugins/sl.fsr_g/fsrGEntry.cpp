@@ -819,6 +819,17 @@ bool createFgSwapchain(fsr::FSRContext& ctx, VkDevice device, const VkSwapchainC
         FfxApiSwapchainFramePacingTuning pacing{};
         pacing.safetyMarginInMs = 0.1f;
         pacing.varianceFactor   = 0.1f;
+        // The rest were left zero-initialised, which is not the same as FFX's defaults:
+        // hybridSpinTime documents a default of 2 and warns that going below it "will result in
+        // frequent overshoots", and zero is below it. With allowHybridSpin and
+        // allowWaitForSingleObjectOnFence both false the pacer busy-spins the whole inter-frame
+        // gap, and once that gap is long it overshoots and emits the interpolated frame alongside
+        // the real one instead of between them -- measured on a 60 Hz display at a 20 fps cap as
+        // a display cadence alternating one refresh interval and then the remainder, for a
+        // frame-time deviation of 48.8 ms with half of all frames beyond twice the median.
+        pacing.allowHybridSpin  = true;
+        pacing.hybridSpinTime   = 2;
+        pacing.allowWaitForSingleObjectOnFence = true;
         ffxConfigureDescFrameGenerationSwapChainKeyValueVK kv{};
         kv.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_VK;
         kv.header.pNext = nullptr;
