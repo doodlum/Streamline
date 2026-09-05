@@ -767,24 +767,25 @@ bool createFgSwapchain(fsr::FSRContext& ctx, VkDevice device, const VkSwapchainC
     // this pointer rather than the loader's: the handle below is a FrameInterpolationSwapChainVK*
     // that only FFX can interpret. An application that publishes real metadata later simply
     // overwrites this.
-    if (ctx.fgSwapchainFns.pOutSetHdrMetadataEXT != nullptr
-        && (pCreateInfo->imageColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT
-         || pCreateInfo->imageColorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)) {
-        VkHdrMetadataEXT metadata{ VK_STRUCTURE_TYPE_HDR_METADATA_EXT };
-        metadata.displayPrimaryRed         = { 0.708f, 0.292f };   // BT.2020
-        metadata.displayPrimaryGreen       = { 0.170f, 0.797f };
-        metadata.displayPrimaryBlue        = { 0.131f, 0.046f };
-        metadata.whitePoint                = { 0.3127f, 0.3290f }; // D65
-        metadata.minLuminance              = 0.0f;
-        metadata.maxLuminance              = 1000.0f;
-        metadata.maxContentLightLevel      = 1000.0f;
-        metadata.maxFrameAverageLightLevel = 200.0f;
+    if (pCreateInfo->imageColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT
+        || pCreateInfo->imageColorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+        if (ctx.fgSwapchainFns.pOutSetHdrMetadataEXT != nullptr) {
+            VkHdrMetadataEXT metadata{ VK_STRUCTURE_TYPE_HDR_METADATA_EXT };
+            metadata.displayPrimaryRed         = { 0.708f, 0.292f };   // BT.2020
+            metadata.displayPrimaryGreen       = { 0.170f, 0.797f };
+            metadata.displayPrimaryBlue        = { 0.131f, 0.046f };
+            metadata.whitePoint                = { 0.3127f, 0.3290f }; // D65
+            metadata.minLuminance              = 0.0f;
+            metadata.maxLuminance              = 1000.0f;
+            metadata.maxContentLightLevel      = 1000.0f;
+            metadata.maxFrameAverageLightLevel = 200.0f;
 
-        ctx.fgSwapchainFns.pOutSetHdrMetadataEXT(device, 1, &ctx.fgWrappedSwapchain, &metadata);
-        SL_LOG_INFO("sl.fsr_g: published default HDR mastering range (max 1000 nits) for colour space %d", (int)pCreateInfo->imageColorSpace);
-    } else {
-        SL_LOG_WARN("sl.fsr_g: HDR mastering range NOT published (setHdrMetadataFn=%p colourSpace=%d) - frame generation will divide by a zero luminance on an HDR swapchain",
-            (void*)ctx.fgSwapchainFns.pOutSetHdrMetadataEXT, (int)pCreateInfo->imageColorSpace);
+            ctx.fgSwapchainFns.pOutSetHdrMetadataEXT(device, 1, &ctx.fgWrappedSwapchain, &metadata);
+            SL_LOG_INFO("sl.fsr_g: published default HDR mastering range (max 1000 nits) for colour space %d", (int)pCreateInfo->imageColorSpace);
+        } else {
+            SL_LOG_WARN("sl.fsr_g: HDR colour space %d but no SetHdrMetadataEXT function pointer - frame generation will divide by a zero luminance",
+                (int)pCreateInfo->imageColorSpace);
+        }
     }
 
     // Link the interpolation context to this swapchain + register our dispatch callback. Start

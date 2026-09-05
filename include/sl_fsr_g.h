@@ -29,12 +29,12 @@ SL_STRUCT_BEGIN(FSRFrameGenState, StructType({ 0xf5d6e708, 0x9102, 0x43b4, { 0xc
     uint32_t status{};
     //! Frames actually presented per app frame (2 == frame generation doubling is active).
     uint32_t numFramesActuallyPresented{};
+    uint64_t estimatedVRAMUsageInBytes{};
     //! Running total of frames the FG swapchain has presented (real + generated). Difference this
     //! across a time interval for the true post-FG frame rate; numFramesActuallyPresented above is a
     //! per-present flag and reads 1 on any present that had no prepared frame, so sampling it
     //! instantaneously reports an un-doubled multiplier.
     uint64_t totalPresentedFrames{};
-    uint64_t estimatedVRAMUsageInBytes{};
 SL_STRUCT_END()
 
 }
