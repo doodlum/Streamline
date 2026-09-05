@@ -482,12 +482,16 @@ bool acquireFgQueues(fsr::FSRContext& ctx)
     ctx.extraQueueFamily = family;
     ctx.gameQueueFamily = family;
 
-    ctx.vkGetDeviceQueue(ctx.device, family, extraStart, &ctx.presentQueue);
-    ctx.vkGetDeviceQueue(ctx.device, family, extraStart + 1, &ctx.imageAcquireQueue);
+    // Skip the first injected queue: sl.dlss_g's pacer lives there (it reads the same
+    // graphicsQueueIndex), and sharing a VkQueue with it is undefined behaviour. We declare three
+    // extras in updateEmbeddedJSON so indices extraStart+1 and extraStart+2 always exist.
+    ctx.vkGetDeviceQueue(ctx.device, family, extraStart + 1, &ctx.presentQueue);
+    ctx.vkGetDeviceQueue(ctx.device, family, extraStart + 2, &ctx.imageAcquireQueue);
     if (ctx.gameQueue == VK_NULL_HANDLE)  // not captured yet -> fall back to the app's index-0 queue
         ctx.vkGetDeviceQueue(ctx.device, family, 0, &ctx.gameQueue);
     if (ctx.presentQueue == VK_NULL_HANDLE || ctx.imageAcquireQueue == VK_NULL_HANDLE) {
-        SL_LOG_ERROR("sl.fsr_g: failed to acquire injected FG queues (family %u start %u)", family, extraStart);
+        SL_LOG_ERROR("sl.fsr_g: failed to acquire injected FG queues (family %u indices %u,%u)",
+            family, extraStart + 1, extraStart + 2);
         return false;
     }
     ctx.queuesAcquired = true;
@@ -1439,7 +1443,15 @@ void updateEmbeddedJSON(json& config)
     // over loaded plugins' configs). FFX's FrameInterpolationSwapChain needs distinct
     // present + image-acquire queues, exclusive of DXVK's own. Set AFTER updateCommonEmbeddedJSONConfig
     // so it isn't overwritten; the plugin reads the injected family/start-index back from kVulkanTable.
-    config["external"]["vk"]["device"]["queues"]["graphics"]["count"] = 2;
+    // Three, not two: the interposer sums every plugin's request into one block of extra queues
+    // starting at graphicsQueueIndex, and each plugin then picks its own indices with no knowledge
+    // of the others. sl.dlss_g takes the FIRST extra (graphicsQueueIndex) for its pacer queue. We
+    // used to take that same index for our present queue, so with both plugins loaded FFX's present
+    // thread and DLSS-G's pacer shared one VkQueue - undefined behaviour that surfaced as a GPU
+    // memory-access fault in the pacer's first command buffer after an FSR-FG -> DLSS-G switch.
+    // Declaring a third queue and skipping the first keeps our two off DLSS-G's whether or not it
+    // is loaded (see acquireFgQueues).
+    config["external"]["vk"]["device"]["queues"]["graphics"]["count"] = 3;
 }
 
 SL_EXPORT void* slGetPluginFunction(const char* functionName)
