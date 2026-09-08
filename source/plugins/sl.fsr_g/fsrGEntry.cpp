@@ -86,6 +86,12 @@ struct FSRContext
     bool fgColorHDR = false;
     uint32_t fgDebugFlags = 0;               // FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_* from the host's debug toggles
     bool fgOnlyPresentGenerated = false;     // present only generated frames (host fgShowOnlyGenerated)
+    // FFX frame-pacing tuning requested by the host. Guarded by optionsMutex like the flags above.
+    // Applied at swapchain creation and re-applied whenever the host changes it (the frame-rate cap
+    // changes which values are right), so it does not need a swapchain recreate.
+    float fgPacingSafetyMs = 0.1f;      // FFX default
+    float fgPacingVariance = 0.1f;      // FFX default
+    std::atomic<bool> fgPacingDirty{ false };
     // Defer the first wrapper install until gameplay produces frames. Later enable/disable changes recreate
     // between the FFX wrapper and a plain swapchain.
     std::atomic<bool> fgGameplayReached{ false };
@@ -657,6 +663,56 @@ bool destroyFgSwapchain(fsr::FSRContext& ctx)
     return true;
 }
 
+//! Read a float tuning override from the environment, falling back to the FFX default.
+static float fsrgEnvFloat(const char* name, float fallback)
+{
+    char buf[32]{};
+    const DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf))
+        return fallback;
+    char* end = nullptr;
+    const float v = std::strtof(buf, &end);
+    return (end && end != buf) ? v : fallback;
+}
+
+// Push the host's frame-pacing tuning onto the FG SWAPCHAIN context (distinct from the FG
+// interpolation context). Safe to call any time the swapchain context exists; the key/value
+// configure is how FFX expects this to be changed at runtime.
+static bool applyFramePacingTuning(fsr::FSRContext& ctx)
+{
+    if (!ctx.fgSwapchainContext)
+        return false;
+    FfxApiSwapchainFramePacingTuning pacing{};
+    {
+        std::lock_guard<std::mutex> lock(ctx.optionsMutex);
+        // Env overrides win over the host so the pair can be swept against a PresentMon capture
+        // without rebuilding either side.
+        pacing.safetyMarginInMs = fsrgEnvFloat("CS_FSRFG_SAFETY", ctx.fgPacingSafetyMs);
+        pacing.varianceFactor   = fsrgEnvFloat("CS_FSRFG_VARIANCE", ctx.fgPacingVariance);
+    }
+    // The rest were left zero-initialised, which is not the same as FFX's defaults:
+    // hybridSpinTime documents a default of 2 and warns that going below it "will result in
+    // frequent overshoots", and zero is below it. With allowHybridSpin and
+    // allowWaitForSingleObjectOnFence both false the pacer busy-spins the whole inter-frame
+    // gap, and once that gap is long it overshoots and emits the interpolated frame alongside
+    // the real one instead of between them -- measured on a 60 Hz display at a 20 fps cap as
+    // a display cadence alternating one refresh interval and then the remainder, for a
+    // frame-time deviation of 48.8 ms with half of all frames beyond twice the median.
+    pacing.allowHybridSpin  = true;
+    pacing.hybridSpinTime   = 2;
+    pacing.allowWaitForSingleObjectOnFence = true;
+    ffxConfigureDescFrameGenerationSwapChainKeyValueVK kv{};
+    kv.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_VK;
+    kv.header.pNext = nullptr;
+    kv.key = FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING;
+    kv.ptr = &pacing;
+    const ffxReturnCode_t prc = ffxConfigureSEH(
+        ctx.ffxApi, &ctx.fgSwapchainContext, &kv.header, ctx.dispatchFaulted);
+    SL_LOG_INFO("sl.fsr_g: FG frame-pacing tuning (rc=0x%08X safety=%.3fms variance=%.3f)",
+        (uint32_t)prc, pacing.safetyMarginInMs, pacing.varianceFactor);
+    return !ctx.dispatchFaulted.load(std::memory_order_acquire);
+}
+
 // Replace DXVK's swapchain with an FFX FrameInterpolationSwapChain. Writes the wrapped handle into
 // *pSwapchain; returns false to fall back to the normal swapchain on any failure.
 bool createFgSwapchain(fsr::FSRContext& ctx, VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo,
@@ -817,36 +873,11 @@ bool createFgSwapchain(fsr::FSRContext& ctx, VkDevice device, const VkSwapchainC
         return false;
     }
 
-    // Frame-pacing tuning on the FG SWAPCHAIN context (distinct from the FG interpolation context above).
-    // safetyMargin/varianceFactor shift the pacing algorithm's target frametime; set to FFX's own
-    // defaults (0.1ms / 0.1) explicitly.
-    {
-        FfxApiSwapchainFramePacingTuning pacing{};
-        pacing.safetyMarginInMs = 0.1f;
-        pacing.varianceFactor   = 0.1f;
-        // The rest were left zero-initialised, which is not the same as FFX's defaults:
-        // hybridSpinTime documents a default of 2 and warns that going below it "will result in
-        // frequent overshoots", and zero is below it. With allowHybridSpin and
-        // allowWaitForSingleObjectOnFence both false the pacer busy-spins the whole inter-frame
-        // gap, and once that gap is long it overshoots and emits the interpolated frame alongside
-        // the real one instead of between them -- measured on a 60 Hz display at a 20 fps cap as
-        // a display cadence alternating one refresh interval and then the remainder, for a
-        // frame-time deviation of 48.8 ms with half of all frames beyond twice the median.
-        pacing.allowHybridSpin  = true;
-        pacing.hybridSpinTime   = 2;
-        pacing.allowWaitForSingleObjectOnFence = true;
-        ffxConfigureDescFrameGenerationSwapChainKeyValueVK kv{};
-        kv.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_VK;
-        kv.header.pNext = nullptr;
-        kv.key = FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING;
-        kv.ptr = &pacing;
-        ffxReturnCode_t prc = ffxConfigureSEH(
-            ctx.ffxApi, &ctx.fgSwapchainContext, &kv.header, ctx.dispatchFaulted);
-        SL_LOG_INFO("sl.fsr_g: FG frame-pacing tuning (rc=0x%08X safety=%.3fms variance=%.3f)",
-            (uint32_t)prc, pacing.safetyMarginInMs, pacing.varianceFactor);
-        if (ctx.dispatchFaulted.load(std::memory_order_acquire))
-            return false;
-    }
+    // Frame-pacing tuning on the FG SWAPCHAIN context. The host chooses the values (they depend on
+    // the frame-rate cap); apply whatever it last asked for to this fresh swapchain.
+    if (!applyFramePacingTuning(ctx))
+        return false;
+    ctx.fgPacingDirty.store(false, std::memory_order_release);
 
     SL_LOG_INFO("sl.fsr_g: FFX FG swapchain created (%ux%u, wrapped 0x%llX)", displayW, displayH, (unsigned long long)ctx.fgWrappedSwapchain);
     return true;
@@ -1041,6 +1072,15 @@ sl::Result slFSRFrameGenerationSetOptions(const sl::ViewportHandle& viewport, co
             (options.debugTearLines == Boolean::eTrue ? (uint32_t)FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_TEAR_LINES : 0u) |
             (options.debugPacingLines == Boolean::eTrue ? (uint32_t)FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_PACING_LINES : 0u);
         ctx.fgOnlyPresentGenerated = options.onlyPresentGenerated == Boolean::eTrue;
+        // Zero means "leave as configured" so a host that never sets these keeps FFX's defaults.
+        if (options.pacingSafetyMarginMs > 0.0f || options.pacingVarianceFactor > 0.0f) {
+            if (options.pacingSafetyMarginMs != ctx.fgPacingSafetyMs ||
+                options.pacingVarianceFactor != ctx.fgPacingVariance) {
+                ctx.fgPacingSafetyMs = options.pacingSafetyMarginMs;
+                ctx.fgPacingVariance = options.pacingVarianceFactor;
+                ctx.fgPacingDirty.store(true, std::memory_order_release);
+            }
+        }
     }
     if (changed && !rejectPendingFrame(ctx)) {
         std::lock_guard<std::mutex> lock(ctx.optionsMutex);
@@ -1287,6 +1327,12 @@ VkResult slHookVkQueuePresentKHR(VkQueue Queue, const VkPresentInfoKHR* PresentI
         Skip = false;
         return VK_SUCCESS;
     }
+
+    // The host changes the pacing tuning when the frame-rate cap changes. Re-apply it here rather
+    // than at the SetOptions call: this is the thread that owns the FFX swapchain, and the context
+    // is known valid. A failed apply leaves the previous tuning in force rather than the present.
+    if (ctx.fgPacingDirty.exchange(false, std::memory_order_acq_rel))
+        applyFramePacingTuning(ctx);
 
     fsr::FrameGenerationFrame frame{};
     uint64_t frameID = 0;

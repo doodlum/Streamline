@@ -20,6 +20,16 @@ SL_STRUCT_BEGIN(FSRFrameGenOptions, StructType({ 0xe4c5d6f7, 0x8091, 0x42a3, { 0
     Boolean debugTearLines = Boolean::eFalse;        //! FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_TEAR_LINES
     Boolean debugPacingLines = Boolean::eFalse;      //! FFX_FRAMEGENERATION_FLAG_DRAW_DEBUG_PACING_LINES
     Boolean onlyPresentGenerated = Boolean::eFalse;  //! present only generated frames (FFX onlyPresentGenerated)
+    //! FFX frame-pacing tuning, forwarded to FFX_API_CONFIGURE_FG_SWAPCHAIN_KEY_FRAMEPACINGTUNING.
+    //! FFX places the interpolated frame at (average frametime - variance * varianceFactor -
+    //! safetyMarginInMs) rather than at the midpoint. The right subtraction depends on the frame
+    //! interval: FFX's defaults (0.1 / 0.1) hold placement together at short intervals but
+    //! displace it measurably at long ones, and the host decides the trade. Zero means
+    //! "leave as configured", so a host that does not set these keeps whatever FFX had.
+    //! NOTE: fork-added fields go LAST in this struct -- inserting one mid-struct silently
+    //! misreads every field after it across the plugin ABI boundary.
+    float pacingSafetyMarginMs = 0.0f;
+    float pacingVarianceFactor = 0.0f;
 SL_STRUCT_END()
 
 //! FSR frame-generation state (mirrors DLSSGState).
